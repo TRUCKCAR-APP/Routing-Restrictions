@@ -1,6 +1,7 @@
 package escuelaing.edu.co.truckdar.routing_restrictions.service;
 
 import escuelaing.edu.co.truckdar.routing_restrictions.dto.event.RoadRestrictionEvent;
+import escuelaing.edu.co.truckdar.routing_restrictions.dto.event.EventEnvelope;
 import escuelaing.edu.co.truckdar.routing_restrictions.dto.request.CreateRestrictionRequest;
 import escuelaing.edu.co.truckdar.routing_restrictions.dto.request.ValidateRouteCompatibilityRequest;
 import escuelaing.edu.co.truckdar.routing_restrictions.dto.response.RoadRestrictionResponse;
@@ -18,6 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -173,7 +176,7 @@ public class RoadRestrictionService implements IRoadRestrictionService {
     }
 
     private void publishKafkaEvent(RoadRestriction restriction, String action) {
-        RoadRestrictionEvent event = RoadRestrictionEvent.builder()
+        RoadRestrictionEvent payload = RoadRestrictionEvent.builder()
                 .restrictionId(restriction.getId())
                 .restrictionCode(restriction.getRestrictionCode())
                 .title(restriction.getTitle())
@@ -184,6 +187,17 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                 .longitude(restriction.getLongitude())
                 .eventAction(action)
                 .timestamp(LocalDateTime.now())
+                .build();
+
+        EventEnvelope<RoadRestrictionEvent> event = EventEnvelope.<RoadRestrictionEvent>builder()
+                .eventId(UUID.randomUUID())
+                .eventType("CREATED".equals(action) ? "restriction.created" : "route.updated")
+                .occurredAt(Instant.now())
+                .correlationId(UUID.nameUUIDFromBytes(
+                        restriction.getRestrictionCode().getBytes(StandardCharsets.UTF_8)))
+                .version(1)
+                .producer("routing-restrictions")
+                .payload(payload)
                 .build();
 
         kafkaTemplate.send(restrictionsTopic, restriction.getRoadCorridor(), event);
