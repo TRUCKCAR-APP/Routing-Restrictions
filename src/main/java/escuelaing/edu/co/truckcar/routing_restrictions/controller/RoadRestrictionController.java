@@ -4,6 +4,7 @@ import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.CreateRestric
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.ValidateRouteCompatibilityRequest;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RoadRestrictionResponse;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteCompatibilityResponse;
+import escuelaing.edu.co.truckcar.routing_restrictions.exception.RestrictionAccessDeniedException;
 import escuelaing.edu.co.truckcar.routing_restrictions.model.RestrictionType;
 import escuelaing.edu.co.truckcar.routing_restrictions.service.IRoadRestrictionService;
 import jakarta.validation.Valid;
@@ -13,6 +14,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/v1/restrictions")
@@ -20,10 +22,17 @@ import java.util.List;
 @CrossOrigin(origins = "*")
 public class RoadRestrictionController {
 
+    private static final String AUTH_ROLE_HEADER = "X-Auth-Role";
+    private static final Set<String> CONTROL_TOWER_ROLES = Set.of("COORDINADOR", "ADMIN");
+
     private final IRoadRestrictionService service;
 
+    /** Crear y desactivar restricciones (gálibo, peso, horario) cambia las rutas de toda la flota: solo la torre. */
     @PostMapping
-    public ResponseEntity<RoadRestrictionResponse> createRestriction(@Valid @RequestBody CreateRestrictionRequest request) {
+    public ResponseEntity<RoadRestrictionResponse> createRestriction(
+            @Valid @RequestBody CreateRestrictionRequest request,
+            @RequestHeader(value = AUTH_ROLE_HEADER, required = false) String authenticatedRole) {
+        requireControlTower(authenticatedRole);
         return new ResponseEntity<>(service.createRestriction(request), HttpStatus.CREATED);
     }
 
@@ -40,7 +49,10 @@ public class RoadRestrictionController {
     }
 
     @PatchMapping("/{id}/deactivate")
-    public ResponseEntity<RoadRestrictionResponse> deactivateRestriction(@PathVariable Long id) {
+    public ResponseEntity<RoadRestrictionResponse> deactivateRestriction(
+            @PathVariable Long id,
+            @RequestHeader(value = AUTH_ROLE_HEADER, required = false) String authenticatedRole) {
+        requireControlTower(authenticatedRole);
         return ResponseEntity.ok(service.deactivateRestriction(id));
     }
 
@@ -48,5 +60,16 @@ public class RoadRestrictionController {
     public ResponseEntity<RouteCompatibilityResponse> validateCompatibility(
             @Valid @RequestBody ValidateRouteCompatibilityRequest request) {
         return ResponseEntity.ok(service.validateCompatibility(request));
+    }
+
+    /** X-Auth-Role lo fija el api-gateway desde el JWT (descarta el que envíe el cliente). */
+    private static void requireControlTower(String authenticatedRole) {
+        if (authenticatedRole == null || authenticatedRole.isBlank()) {
+            throw new RestrictionAccessDeniedException("Se requiere un rol autenticado para modificar restricciones", true);
+        }
+        if (!CONTROL_TOWER_ROLES.contains(authenticatedRole)) {
+            throw new RestrictionAccessDeniedException("El rol " + authenticatedRole
+                    + " no puede modificar restricciones viales (solo COORDINADOR o ADMIN)", false);
+        }
     }
 }
