@@ -4,8 +4,11 @@ import escuelaing.edu.co.truckcar.routing_restrictions.dto.event.RoadRestriction
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.event.EventEnvelope;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.CreateRestrictionRequest;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.ValidateRouteCompatibilityRequest;
+import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.ValidateRouteGeometryRequest;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RoadRestrictionResponse;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteCompatibilityResponse;
+import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteGeometryValidationResponse;
+import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteRestrictionHit;
 import escuelaing.edu.co.truckcar.routing_restrictions.exception.RestrictionNotFoundException;
 import escuelaing.edu.co.truckcar.routing_restrictions.model.RestrictionSeverity;
 import escuelaing.edu.co.truckcar.routing_restrictions.model.RestrictionType;
@@ -22,7 +25,10 @@ import java.time.LocalDateTime;
 import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -30,6 +36,13 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class RoadRestrictionService implements IRoadRestrictionService {
+
+    /** Límites del vehículo: solo bloquean a quien los excede, sea cual sea su severidad. */
+    private static final EnumSet<RestrictionType> VEHICLE_LIMITS =
+            EnumSet.of(RestrictionType.GALIBO_ALTURA, RestrictionType.PESO_BRUTO, RestrictionType.PESO_POR_EJE);
+    private static final double DEFAULT_CORRIDOR_METERS = 60.0;
+    /** Los mensajes van en español con coma decimal, sin depender del idioma del servidor. */
+    private static final Locale ES_CO = Locale.forLanguageTag("es-CO");
 
     private final RoadRestrictionRepository repository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
@@ -130,7 +143,7 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                     && res.getMaxClearanceMeters() != null
                     && request.getHeightMeters() > res.getMaxClearanceMeters()) {
                 isViolated = true;
-                blockingReasons.add(String.format("Altura del camión (%.2fm) supera el gálibo máximo permitido (%.2fm) en %s",
+                blockingReasons.add(String.format(ES_CO, "Altura del camión (%.2fm) supera el gálibo máximo permitido (%.2fm) en %s",
                         request.getHeightMeters(), res.getMaxClearanceMeters(), res.getTitle()));
             }
 
@@ -138,7 +151,7 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                     && res.getMaxGrossWeightTons() != null
                     && request.getGrossWeightTons() > res.getMaxGrossWeightTons()) {
                 isViolated = true;
-                blockingReasons.add(String.format("Peso bruto (%.2f Tn) supera el límite autorizado (%.2f Tn) en %s",
+                blockingReasons.add(String.format(ES_CO, "Peso bruto (%.2f Tn) supera el límite autorizado (%.2f Tn) en %s",
                         request.getGrossWeightTons(), res.getMaxGrossWeightTons(), res.getTitle()));
             }
 
@@ -147,11 +160,13 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                     && request.getAxleWeightTons() != null
                     && request.getAxleWeightTons() > res.getMaxAxleWeightTons()) {
                 isViolated = true;
-                blockingReasons.add(String.format("Peso por eje (%.2f Tn) excede el máximo permitido (%.2f Tn) en %s",
+                blockingReasons.add(String.format(ES_CO, "Peso por eje (%.2f Tn) excede el máximo permitido (%.2f Tn) en %s",
                         request.getAxleWeightTons(), res.getMaxAxleWeightTons(), res.getTitle()));
             }
 
-            if (res.getSeverity() == RestrictionSeverity.BLOQUEO_TOTAL) {
+            if (VEHICLE_LIMITS.contains(res.getRestrictionType())) {
+                // Ya se evaluó contra la altura o el peso del vehículo: la severidad no bloquea a quien cumple.
+            } else if (res.getSeverity() == RestrictionSeverity.BLOQUEO_TOTAL) {
                 isViolated = true;
                 blockingReasons.add("Paso bloqueado en el tramo: " + res.getTitle());
             } else if (res.getSeverity() == RestrictionSeverity.PRECAUCION) {
@@ -173,6 +188,108 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                 .warnings(warnings)
                 .violatedRestrictions(violatedList)
                 .build();
+    }
+
+    /**
+     * Restricciones activas a lo largo de la geometría real de la ruta. Cada restricción con posición aplica si está a
+     * corridorMeters o menos de la polilínea; las de altura y peso bloquean solo si el vehículo excede el límite.
+     * Limitación: una restricción es un punto, sin calzada ni sentido; un puente que cruza por encima de la ruta y la
+     * vía que pasa bajo él se ven igual de cerca.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public RouteGeometryValidationResponse validateRoute(ValidateRouteGeometryRequest request) {
+        RouteGeometry route = RouteGeometry.of(request.getPath());
+        double corridor = request.getCorridorMeters() != null ? request.getCorridorMeters() : DEFAULT_CORRIDOR_METERS;
+        double[] box = route.boundingBox(corridor);
+        LocalDateTime now = LocalDateTime.now();
+
+        List<RoadRestriction> nearby = repository.findActiveWithin(box[0], box[1], box[2], box[3]).stream()
+                .filter(r -> r.getAppliesFrom() == null || !now.isBefore(r.getAppliesFrom()))
+                .filter(r -> r.getAppliesTo() == null || !now.isAfter(r.getAppliesTo()))
+                .toList();
+
+        List<RouteRestrictionHit> blocking = new ArrayList<>();
+        List<RouteRestrictionHit> warnings = new ArrayList<>();
+        int evaluated = 0;
+        for (RoadRestriction r : nearby) {
+            RouteGeometry.Projection at = route.project(r.getLatitude(), r.getLongitude());
+            if (at.distanceMeters() > corridor) {
+                continue;
+            }
+            evaluated++;
+            classify(r, request).ifPresent(hit -> {
+                hit.setAlongRouteMeters(Math.round(at.alongMeters() * 10) / 10.0);
+                hit.setDistanceFromRouteMeters(Math.round(at.distanceMeters() * 10) / 10.0);
+                hit.setRestriction(mapToResponse(r));
+                (isBlocking(hit.getKind()) ? blocking : warnings).add(hit);
+            });
+        }
+        Comparator<RouteRestrictionHit> byPosition = Comparator.comparing(RouteRestrictionHit::getAlongRouteMeters);
+        blocking.sort(byPosition);
+        warnings.sort(byPosition);
+
+        return RouteGeometryValidationResponse.builder()
+                .vehiclePlate(request.getVehiclePlate())
+                .passable(blocking.isEmpty())
+                .routeLengthMeters(Math.round(route.lengthMeters() * 10) / 10.0)
+                .restrictionsEvaluated(evaluated)
+                .blocking(blocking)
+                .warnings(warnings)
+                .build();
+    }
+
+    /** Por qué aplica la restricción a este vehículo; vacío si no le aplica. */
+    private java.util.Optional<RouteRestrictionHit> classify(RoadRestriction r, ValidateRouteGeometryRequest v) {
+        String title = r.getTitle();
+        switch (r.getRestrictionType()) {
+            case GALIBO_ALTURA -> {
+                if (r.getMaxClearanceMeters() != null && v.getHeightMeters() > r.getMaxClearanceMeters()) {
+                    return hit("GALIBO_ALTURA", String.format(ES_CO, "Altura del camión (%.2f m) supera el gálibo de %.2f m en %s",
+                            v.getHeightMeters(), r.getMaxClearanceMeters(), title));
+                }
+                return java.util.Optional.empty();
+            }
+            case PESO_BRUTO -> {
+                if (r.getMaxGrossWeightTons() != null && v.getGrossWeightTons() > r.getMaxGrossWeightTons()) {
+                    return hit("PESO_BRUTO", String.format(ES_CO, "Peso bruto (%.1f t) supera el límite de %.1f t en %s",
+                            v.getGrossWeightTons(), r.getMaxGrossWeightTons(), title));
+                }
+                return java.util.Optional.empty();
+            }
+            case PESO_POR_EJE -> {
+                if (r.getMaxAxleWeightTons() == null) {
+                    return java.util.Optional.empty();
+                }
+                if (v.getAxleWeightTons() == null) {
+                    // Sin el peso por eje real no se adivina: se avisa del límite para que el conductor lo verifique.
+                    return hit("PESO_POR_EJE_SIN_DATO", String.format(ES_CO, "Límite de %.1f t por eje en %s: verifique la carga por eje",
+                            r.getMaxAxleWeightTons(), title));
+                }
+                if (v.getAxleWeightTons() > r.getMaxAxleWeightTons()) {
+                    return hit("PESO_POR_EJE", String.format(ES_CO, "Peso por eje (%.1f t) supera el límite de %.1f t en %s",
+                            v.getAxleWeightTons(), r.getMaxAxleWeightTons(), title));
+                }
+                return java.util.Optional.empty();
+            }
+            default -> {
+                if (r.getSeverity() == RestrictionSeverity.BLOQUEO_TOTAL) {
+                    return hit("BLOQUEO_TOTAL", "Paso cerrado: " + title);
+                }
+                if (r.getSeverity() == RestrictionSeverity.PRECAUCION) {
+                    return hit("PRECAUCION", "Precaución: " + title);
+                }
+                return java.util.Optional.empty();
+            }
+        }
+    }
+
+    private static boolean isBlocking(String kind) {
+        return !"PRECAUCION".equals(kind) && !"PESO_POR_EJE_SIN_DATO".equals(kind);
+    }
+
+    private static java.util.Optional<RouteRestrictionHit> hit(String kind, String reason) {
+        return java.util.Optional.of(RouteRestrictionHit.builder().kind(kind).reason(reason).build());
     }
 
     private void publishKafkaEvent(RoadRestriction restriction, String action) {
