@@ -64,4 +64,23 @@ class RoadRestrictionControllerAccessTest {
         mvc.perform(create()).andExpect(status().isUnauthorized());
         verifyNoInteractions(service);
     }
+
+    /** Cualquier rol autenticado valida su ruta; una ruta mal formada es un 400 con el motivo, no un 500. */
+    @Test
+    void routeValidationChecksItsInput() throws Exception {
+        when(service.validateRoute(any())).thenReturn(
+                escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteGeometryValidationResponse.builder().passable(true).build());
+        String ok = "{\"heightMeters\":4.1,\"grossWeightTons\":40,\"path\":[[4.6,-74.0],[4.61,-74.0]]}";
+        mvc.perform(post("/api/v1/restrictions/validate-route").header("X-Auth-Role", "CONDUCTOR")
+                .contentType(MediaType.APPLICATION_JSON).content(ok)).andExpect(status().isOk());
+
+        String noHeight = "{\"grossWeightTons\":40,\"path\":[[4.6,-74.0],[4.61,-74.0]]}";
+        mvc.perform(post("/api/v1/restrictions/validate-route").contentType(MediaType.APPLICATION_JSON).content(noHeight))
+                .andExpect(status().isBadRequest());
+
+        when(service.validateRoute(any())).thenThrow(new IllegalArgumentException("Punto de la ruta fuera de rango: [95.0, -74.0]"));
+        String outOfRange = "{\"heightMeters\":4.1,\"grossWeightTons\":40,\"path\":[[4.6,-74.0],[95.0,-74.0]]}";
+        mvc.perform(post("/api/v1/restrictions/validate-route").contentType(MediaType.APPLICATION_JSON).content(outOfRange))
+                .andExpect(status().isBadRequest());
+    }
 }

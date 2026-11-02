@@ -2,8 +2,10 @@ package escuelaing.edu.co.truckcar.routing_restrictions.controller;
 
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.CreateRestrictionRequest;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.ValidateRouteCompatibilityRequest;
+import escuelaing.edu.co.truckcar.routing_restrictions.dto.request.ValidateRouteGeometryRequest;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RoadRestrictionResponse;
 import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteCompatibilityResponse;
+import escuelaing.edu.co.truckcar.routing_restrictions.dto.response.RouteGeometryValidationResponse;
 import escuelaing.edu.co.truckcar.routing_restrictions.exception.RestrictionAccessDeniedException;
 import escuelaing.edu.co.truckcar.routing_restrictions.model.RestrictionType;
 import escuelaing.edu.co.truckcar.routing_restrictions.service.IRoadRestrictionService;
@@ -60,6 +62,12 @@ public class RoadRestrictionController {
     public ResponseEntity<RouteCompatibilityResponse> validateCompatibility(
             @Valid @RequestBody ValidateRouteCompatibilityRequest request) {
         return ResponseEntity.ok(service.validateCompatibility(request));
+    }
+
+    /** Gálibo, peso y cierres sobre la geometría real de la ruta (la polilínea de OSRM), no sobre el nombre del corredor. */
+    @PostMapping("/validate-route")
+    public ResponseEntity<RouteGeometryValidationResponse> validateRoute(@Valid @RequestBody ValidateRouteGeometryRequest request) {
+        return ResponseEntity.ok(service.validateRoute(request));
     }
 
     /** X-Auth-Role lo fija el api-gateway desde el JWT (descarta el que envíe el cliente). */
