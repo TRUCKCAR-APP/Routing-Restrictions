@@ -23,6 +23,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.text.Normalizer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -43,6 +45,8 @@ public class RoadRestrictionService implements IRoadRestrictionService {
     private static final double DEFAULT_CORRIDOR_METERS = 60.0;
     /** Los mensajes van en español con coma decimal, sin depender del idioma del servidor. */
     private static final Locale ES_CO = Locale.forLanguageTag("es-CO");
+    /** Zona horaria oficial para operaciones de transporte en Colombia (UTC-5). */
+    public static final ZoneId BOGOTA_ZONE = ZoneId.of("America/Bogota");
 
     private final RoadRestrictionRepository repository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
@@ -58,7 +62,7 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                 : "RES-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
         String corridor = request.getRoadCorridor() != null
-                ? request.getRoadCorridor().trim().toUpperCase(Locale.ROOT)
+                ? normalizeCorridor(request.getRoadCorridor())
                 : null;
 
         RoadRestriction restriction = RoadRestriction.builder()
@@ -125,14 +129,25 @@ public class RoadRestrictionService implements IRoadRestrictionService {
     @Override
     @Transactional(readOnly = true)
     public RouteCompatibilityResponse validateCompatibility(ValidateRouteCompatibilityRequest request) {
-        String corridor = request.getRoadCorridor() != null ? request.getRoadCorridor().trim() : "";
-        List<RoadRestriction> activeRestrictions = repository.findByRoadCorridorIgnoreCaseAndIsActiveTrue(corridor);
+        String corridor = normalizeCorridor(request.getRoadCorridor());
+        // El corredor puede especificarse como trayecto A-B o B-A; la restricción aplica en ambos sentidos.
+        String reverseCorridor = corridor.contains("-")
+                ? corridor.substring(corridor.indexOf('-') + 1) + "-" + corridor.substring(0, corridor.indexOf('-'))
+                : corridor;
+
+        List<RoadRestriction> activeRestrictions = repository.findByIsActiveTrue().stream()
+                .filter(res -> {
+                    String resCorridor = normalizeCorridor(res.getRoadCorridor());
+                    return resCorridor.equals(corridor) || resCorridor.equals(reverseCorridor);
+                })
+                .toList();
 
         List<String> blockingReasons = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         List<RoadRestrictionResponse> violatedList = new ArrayList<>();
 
-        LocalDateTime now = LocalDateTime.now();
+        // Zona horaria America/Bogota oficial para Colombia (UTC-5)
+        LocalDateTime now = LocalDateTime.now(BOGOTA_ZONE);
 
         for (RoadRestriction res : activeRestrictions) {
             if (res.getAppliesFrom() != null && now.isBefore(res.getAppliesFrom())) {
@@ -359,5 +374,24 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                 .isActive(entity.getIsActive())
                 .createdAt(entity.getCreatedAt())
                 .build();
+    }
+
+    /**
+     * Normaliza canónicamente el nombre de un corredor vial:
+     * - Remueve tildes y diacríticos (ej. "Bogotá" -> "Bogota")
+     * - Remueve espacios alrededor de guiones (ej. "Bogotá - Tunja" -> "BOGOTA-TUNJA")
+     * - Colapsa espacios redundantes
+     * - Convierte a mayúsculas
+     */
+    public static String normalizeCorridor(String corridor) {
+        if (corridor == null || corridor.isBlank()) {
+            return "";
+        }
+        String withoutAccents = Normalizer.normalize(corridor, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
+        return withoutAccents.trim()
+                .replaceAll("\\s*-\\s*", "-")
+                .replaceAll("\\s+", " ")
+                .toUpperCase(Locale.ROOT);
     }
 }

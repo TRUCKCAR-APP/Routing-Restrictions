@@ -44,6 +44,7 @@ class RoadRestrictionServiceRouteTest {
                         && r.getLongitude() >= (double) inv.getArgument(2) && r.getLongitude() <= (double) inv.getArgument(3))
                 .toList());
         when(repository.findByRoadCorridorIgnoreCaseAndIsActiveTrue(anyString())).thenAnswer(inv -> stored);
+        when(repository.findByIsActiveTrue()).thenAnswer(inv -> stored);
         service = new RoadRestrictionService(repository, mock(KafkaTemplate.class));
     }
 
@@ -251,14 +252,52 @@ class RoadRestrictionServiceRouteTest {
 
         var created = service.createRestriction(req);
         assertThat(created.getRoadCorridor()).isEqualTo("RUTA 45");
+    }
 
-        // Consulta con espacios
-        service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
-                .vehiclePlate("NORM-1")
-                .roadCorridor("  ruta 45  ")
-                .heightMeters(3.0)
-                .grossWeightTons(10.0)
+    @Test
+    void corridorMatchingWithAccentsAndReverseDirection() {
+        stored.clear();
+        // Restricción creada por el coordinador como "Bogotá - Tunja" con gálibo de 4.10 m
+        RoadRestriction r = RoadRestriction.builder()
+                .id(99L)
+                .restrictionCode("RES-99")
+                .title("Túnel Quebrada Blanca")
+                .roadCorridor(RoadRestrictionService.normalizeCorridor("Bogotá - Tunja"))
+                .restrictionType(RestrictionType.GALIBO_ALTURA)
+                .severity(RestrictionSeverity.BLOQUEO_TOTAL)
+                .maxClearanceMeters(4.10)
+                .isActive(true)
+                .createdAt(LocalDateTime.now())
+                .build();
+        stored.add(r);
+
+        // 1. Camión incompatible (4.30m) viajando en sentido inverso: "tunja-bogota" sin tildes ni espacios
+        RouteCompatibilityResponse respReverse = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("INC-01")
+                .roadCorridor("tunja-bogota")
+                .heightMeters(4.30)
+                .grossWeightTons(20.0)
                 .build());
-        verify(repository).findByRoadCorridorIgnoreCaseAndIsActiveTrue("ruta 45");
+        assertThat(respReverse.getIsPassable()).isFalse();
+        assertThat(respReverse.getBlockingReasons()).singleElement().asString().contains("supera el gálibo máximo");
+
+        // 2. Camión incompatible (4.30m) con tildes y espacios: "Bogotá - Tunja"
+        RouteCompatibilityResponse respAccents = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("INC-02")
+                .roadCorridor("Bogotá - Tunja")
+                .heightMeters(4.30)
+                .grossWeightTons(20.0)
+                .build());
+        assertThat(respAccents.getIsPassable()).isFalse();
+
+        // 3. Camión compatible (3.90m) en el mismo corredor: transitable
+        RouteCompatibilityResponse respValid = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("VAL-01")
+                .roadCorridor("BOGOTA-TUNJA")
+                .heightMeters(3.90)
+                .grossWeightTons(20.0)
+                .build());
+        assertThat(respValid.getIsPassable()).isTrue();
+        assertThat(respValid.getBlockingReasons()).isEmpty();
     }
 }
