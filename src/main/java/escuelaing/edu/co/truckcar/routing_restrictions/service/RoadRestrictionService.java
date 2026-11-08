@@ -57,13 +57,17 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                 ? request.getRestrictionCode()
                 : "RES-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
+        String corridor = request.getRoadCorridor() != null
+                ? request.getRoadCorridor().trim().toUpperCase(Locale.ROOT)
+                : null;
+
         RoadRestriction restriction = RoadRestriction.builder()
                 .restrictionCode(code)
                 .title(request.getTitle())
                 .description(request.getDescription())
                 .restrictionType(request.getRestrictionType())
                 .severity(request.getSeverity())
-                .roadCorridor(request.getRoadCorridor())
+                .roadCorridor(corridor)
                 .department(request.getDepartment())
                 .maxClearanceMeters(request.getMaxClearanceMeters())
                 .maxGrossWeightTons(request.getMaxGrossWeightTons())
@@ -96,7 +100,7 @@ public class RoadRestrictionService implements IRoadRestrictionService {
     public List<RoadRestrictionResponse> getAllActiveRestrictions(String corridor, RestrictionType type) {
         List<RoadRestriction> list;
         if (corridor != null && !corridor.isBlank()) {
-            list = repository.findByRoadCorridorIgnoreCaseAndIsActiveTrue(corridor);
+            list = repository.findByRoadCorridorIgnoreCaseAndIsActiveTrue(corridor.trim());
         } else if (type != null) {
             list = repository.findByRestrictionTypeAndIsActiveTrue(type);
         } else {
@@ -121,7 +125,8 @@ public class RoadRestrictionService implements IRoadRestrictionService {
     @Override
     @Transactional(readOnly = true)
     public RouteCompatibilityResponse validateCompatibility(ValidateRouteCompatibilityRequest request) {
-        List<RoadRestriction> activeRestrictions = repository.findByRoadCorridorIgnoreCaseAndIsActiveTrue(request.getRoadCorridor());
+        String corridor = request.getRoadCorridor() != null ? request.getRoadCorridor().trim() : "";
+        List<RoadRestriction> activeRestrictions = repository.findByRoadCorridorIgnoreCaseAndIsActiveTrue(corridor);
 
         List<String> blockingReasons = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
@@ -156,14 +161,26 @@ public class RoadRestrictionService implements IRoadRestrictionService {
             }
 
             if (res.getRestrictionType() == RestrictionType.PESO_POR_EJE
-                    && res.getMaxAxleWeightTons() != null
-                    && request.getAxleWeightTons() != null
-                    && request.getAxleWeightTons() > res.getMaxAxleWeightTons()) {
-                isViolated = true;
-                blockingReasons.add(String.format(ES_CO, "Peso por eje (%.2f Tn) excede el máximo permitido (%.2f Tn) en %s",
-                        request.getAxleWeightTons(), res.getMaxAxleWeightTons(), res.getTitle()));
+                    && res.getMaxAxleWeightTons() != null) {
+                if (request.getAxleWeightTons() != null) {
+                    if (request.getAxleWeightTons() > res.getMaxAxleWeightTons()) {
+                        isViolated = true;
+                        blockingReasons.add(String.format(ES_CO, "Peso por eje (%.2f Tn) excede el máximo permitido (%.2f Tn) en %s",
+                                request.getAxleWeightTons(), res.getMaxAxleWeightTons(), res.getTitle()));
+                    }
+                } else {
+                    // Sin el peso por eje del vehículo no se bloquea por adivinanza; se alerta como precaución.
+                    warnings.add(String.format(ES_CO, "Límite de %.2f Tn por eje en %s: verifique la carga por eje",
+                            res.getMaxAxleWeightTons(), res.getTitle()));
+                }
             }
 
+            // Reglas para CIERRE_PROGRAMADO, HORARIO_FESTIVO y PASO_RESTRINGIDO:
+            // Si la restricción es de vehículo (gálibo o peso) ya se evaluó numéricamente contra las cotas del camión.
+            // Para el resto (o cierres directos por obras/fiestas/eventos):
+            // - BLOQUEO_TOTAL: bloquea completamente el tránsito.
+            // - PRECAUCION: no impide el paso pero advierte al conductor.
+            // - INFORMATIVA: aviso preventivo sin impedir el paso.
             if (VEHICLE_LIMITS.contains(res.getRestrictionType())) {
                 // Ya se evaluó contra la altura o el peso del vehículo: la severidad no bloquea a quien cumple.
             } else if (res.getSeverity() == RestrictionSeverity.BLOQUEO_TOTAL) {
@@ -171,6 +188,8 @@ public class RoadRestrictionService implements IRoadRestrictionService {
                 blockingReasons.add("Paso bloqueado en el tramo: " + res.getTitle());
             } else if (res.getSeverity() == RestrictionSeverity.PRECAUCION) {
                 warnings.add("Precaución en la ruta: " + res.getTitle());
+            } else if (res.getSeverity() == RestrictionSeverity.INFORMATIVA) {
+                warnings.add("Aviso en la ruta: " + res.getTitle());
             }
 
             if (isViolated) {

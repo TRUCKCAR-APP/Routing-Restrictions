@@ -19,9 +19,11 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** Gálibo, peso y cierres sobre la geometría real de la ruta, según la altura y el peso del vehículo. */
@@ -118,5 +120,145 @@ class RoadRestrictionServiceRouteTest {
                 .vehiclePlate("TKR-527").roadCorridor("BOGOTA-IBAGUE").heightMeters(4.4).grossWeightTons(30.0).build());
         assertThat(tooTall.getIsPassable()).isFalse();
         assertThat(tooTall.getBlockingReasons()).singleElement().asString().contains("gálibo");
+    }
+
+    @Test
+    void galiboAlturaBoundaryCases_equalBarelyAboveBarelyBelow() {
+        stored.clear();
+        restriction(10, RestrictionType.GALIBO_ALTURA, RestrictionSeverity.BLOQUEO_TOTAL, 4.61, -73.995).setMaxClearanceMeters(4.20);
+
+        // Apenas por debajo del límite (4.19 m <= 4.20 m): debe ser transitable
+        RouteCompatibilityResponse below = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("ABC-101").roadCorridor("BOGOTA-IBAGUE").heightMeters(4.19).grossWeightTons(20.0).build());
+        assertThat(below.getIsPassable()).isTrue();
+        assertThat(below.getBlockingReasons()).isEmpty();
+
+        // Exactamente igual al límite (4.20 m <= 4.20 m): debe ser transitable
+        RouteCompatibilityResponse exact = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("ABC-102").roadCorridor("BOGOTA-IBAGUE").heightMeters(4.20).grossWeightTons(20.0).build());
+        assertThat(exact.getIsPassable()).isTrue();
+        assertThat(exact.getBlockingReasons()).isEmpty();
+
+        // Apenas por encima del límite (4.21 m > 4.20 m): debe ser bloqueado
+        RouteCompatibilityResponse above = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("ABC-103").roadCorridor("BOGOTA-IBAGUE").heightMeters(4.21).grossWeightTons(20.0).build());
+        assertThat(above.getIsPassable()).isFalse();
+        assertThat(above.getBlockingReasons()).singleElement().asString().contains("gálibo");
+    }
+
+    @Test
+    void pesoBrutoBoundaryCases_equalBarelyAboveBarelyBelow() {
+        stored.clear();
+        restriction(20, RestrictionType.PESO_BRUTO, RestrictionSeverity.BLOQUEO_TOTAL, 4.61, -73.995).setMaxGrossWeightTons(32.00);
+
+        // Apenas por debajo del límite (31.99 Tn <= 32.00 Tn): transitable
+        RouteCompatibilityResponse below = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("XYZ-201").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(31.99).build());
+        assertThat(below.getIsPassable()).isTrue();
+        assertThat(below.getBlockingReasons()).isEmpty();
+
+        // Igual al límite (32.00 Tn <= 32.00 Tn): transitable
+        RouteCompatibilityResponse exact = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("XYZ-202").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(32.00).build());
+        assertThat(exact.getIsPassable()).isTrue();
+        assertThat(exact.getBlockingReasons()).isEmpty();
+
+        // Apenas por encima del límite (32.01 Tn > 32.00 Tn): bloqueado
+        RouteCompatibilityResponse above = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("XYZ-203").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(32.01).build());
+        assertThat(above.getIsPassable()).isFalse();
+        assertThat(above.getBlockingReasons()).singleElement().asString().contains("Peso bruto");
+    }
+
+    @Test
+    void pesoPorEjeBoundaryCases_equalBarelyAboveBarelyBelowAndNullData() {
+        stored.clear();
+        restriction(30, RestrictionType.PESO_POR_EJE, RestrictionSeverity.BLOQUEO_TOTAL, 4.61, -73.995).setMaxAxleWeightTons(11.00);
+
+        // Apenas por debajo (10.99 Tn <= 11.00 Tn): transitable
+        RouteCompatibilityResponse below = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("EJE-301").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(25.0).axleWeightTons(10.99).build());
+        assertThat(below.getIsPassable()).isTrue();
+        assertThat(below.getBlockingReasons()).isEmpty();
+
+        // Igual al límite (11.00 Tn <= 11.00 Tn): transitable
+        RouteCompatibilityResponse exact = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("EJE-302").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(25.0).axleWeightTons(11.00).build());
+        assertThat(exact.getIsPassable()).isTrue();
+        assertThat(exact.getBlockingReasons()).isEmpty();
+
+        // Apenas por encima (11.01 Tn > 11.00 Tn): bloqueado
+        RouteCompatibilityResponse above = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("EJE-303").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(25.0).axleWeightTons(11.01).build());
+        assertThat(above.getIsPassable()).isFalse();
+        assertThat(above.getBlockingReasons()).singleElement().asString().contains("Peso por eje");
+
+        // Sin dato de peso por eje: no bloquea pero añade advertencia
+        RouteCompatibilityResponse noAxle = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("EJE-304").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.5).grossWeightTons(25.0).axleWeightTons(null).build());
+        assertThat(noAxle.getIsPassable()).isTrue();
+        assertThat(noAxle.getBlockingReasons()).isEmpty();
+        assertThat(noAxle.getWarnings()).singleElement().asString().contains("verifique la carga por eje");
+    }
+
+    @Test
+    void cierreProgramadoHorarioFestivoAndPasoRestringidoRules() {
+        stored.clear();
+        // Cierre programado activo con BLOQUEO_TOTAL: bloquea
+        RoadRestriction cierre = restriction(40, RestrictionType.CIERRE_PROGRAMADO, RestrictionSeverity.BLOQUEO_TOTAL, 4.61, -73.995);
+        cierre.setAppliesFrom(LocalDateTime.now().minusHours(1));
+        cierre.setAppliesTo(LocalDateTime.now().plusHours(2));
+
+        RouteCompatibilityResponse respCierre = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("CIE-401").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.0).grossWeightTons(10.0).build());
+        assertThat(respCierre.getIsPassable()).isFalse();
+        assertThat(respCierre.getBlockingReasons()).singleElement().asString().contains("Paso bloqueado");
+
+        // Cierre vencido: no aplica
+        cierre.setAppliesTo(LocalDateTime.now().minusMinutes(5));
+        RouteCompatibilityResponse respVencido = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("CIE-402").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.0).grossWeightTons(10.0).build());
+        assertThat(respVencido.getIsPassable()).isTrue();
+        assertThat(respVencido.getBlockingReasons()).isEmpty();
+
+        // Horario festivo con BLOQUEO_TOTAL activo: bloquea
+        stored.clear();
+        restriction(50, RestrictionType.HORARIO_FESTIVO, RestrictionSeverity.BLOQUEO_TOTAL, 4.61, -73.995);
+        RouteCompatibilityResponse respFestivo = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("FES-501").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.0).grossWeightTons(10.0).build());
+        assertThat(respFestivo.getIsPassable()).isFalse();
+
+        // Paso restringido con PRECAUCION: no bloquea, añade warning
+        stored.clear();
+        restriction(60, RestrictionType.PASO_RESTRINGIDO, RestrictionSeverity.PRECAUCION, 4.61, -73.995);
+        RouteCompatibilityResponse respPaso = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("PAS-601").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.0).grossWeightTons(10.0).build());
+        assertThat(respPaso.getIsPassable()).isTrue();
+        assertThat(respPaso.getWarnings()).singleElement().asString().contains("Precaución");
+    }
+
+    @Test
+    void corridorNormalizationTrimAndUppercase() {
+        when(repository.save(any(RoadRestriction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        escuelaing.edu.co.truckcar.routing_restrictions.dto.request.CreateRestrictionRequest req =
+                escuelaing.edu.co.truckcar.routing_restrictions.dto.request.CreateRestrictionRequest.builder()
+                        .title("Cierre Ruta 45")
+                        .restrictionType(RestrictionType.CIERRE_PROGRAMADO)
+                        .severity(RestrictionSeverity.BLOQUEO_TOTAL)
+                        .roadCorridor("   ruta 45  ")
+                        .build();
+
+        var created = service.createRestriction(req);
+        assertThat(created.getRoadCorridor()).isEqualTo("RUTA 45");
+
+        // Consulta con espacios
+        service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
+                .vehiclePlate("NORM-1")
+                .roadCorridor("  ruta 45  ")
+                .heightMeters(3.0)
+                .grossWeightTons(10.0)
+                .build());
+        verify(repository).findByRoadCorridorIgnoreCaseAndIsActiveTrue("ruta 45");
     }
 }
