@@ -98,7 +98,7 @@ class RoadRestrictionServiceRouteTest {
         restriction(5, RestrictionType.PASO_RESTRINGIDO, RestrictionSeverity.PRECAUCION, 4.61, -73.991);
         restriction(6, RestrictionType.PESO_POR_EJE, RestrictionSeverity.PRECAUCION, 4.605, -74.0).setMaxAxleWeightTons(10.0);
         RoadRestriction expired = restriction(7, RestrictionType.CIERRE_PROGRAMADO, RestrictionSeverity.BLOQUEO_TOTAL, 4.606, -74.0);
-        expired.setAppliesTo(LocalDateTime.now().minusDays(1));
+        expired.setAppliesTo(LocalDateTime.now(RoadRestrictionService.BOGOTA_ZONE).minusDays(1));
 
         RouteGeometryValidationResponse result = validate(4.1, 40);
 
@@ -207,8 +207,8 @@ class RoadRestrictionServiceRouteTest {
         stored.clear();
         // Cierre programado activo con BLOQUEO_TOTAL: bloquea
         RoadRestriction cierre = restriction(40, RestrictionType.CIERRE_PROGRAMADO, RestrictionSeverity.BLOQUEO_TOTAL, 4.61, -73.995);
-        cierre.setAppliesFrom(LocalDateTime.now().minusHours(1));
-        cierre.setAppliesTo(LocalDateTime.now().plusHours(2));
+        cierre.setAppliesFrom(LocalDateTime.now(RoadRestrictionService.BOGOTA_ZONE).minusHours(1));
+        cierre.setAppliesTo(LocalDateTime.now(RoadRestrictionService.BOGOTA_ZONE).plusHours(2));
 
         RouteCompatibilityResponse respCierre = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
                 .vehiclePlate("CIE-401").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.0).grossWeightTons(10.0).build());
@@ -216,7 +216,7 @@ class RoadRestrictionServiceRouteTest {
         assertThat(respCierre.getBlockingReasons()).singleElement().asString().contains("Paso bloqueado");
 
         // Cierre vencido: no aplica
-        cierre.setAppliesTo(LocalDateTime.now().minusMinutes(5));
+        cierre.setAppliesTo(LocalDateTime.now(RoadRestrictionService.BOGOTA_ZONE).minusMinutes(5));
         RouteCompatibilityResponse respVencido = service.validateCompatibility(ValidateRouteCompatibilityRequest.builder()
                 .vehiclePlate("CIE-402").roadCorridor("BOGOTA-IBAGUE").heightMeters(3.0).grossWeightTons(10.0).build());
         assertThat(respVencido.getIsPassable()).isTrue();
